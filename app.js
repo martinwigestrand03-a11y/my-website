@@ -1,1 +1,607 @@
+/* ARK Home (Local-only)
+   - stores everything in localStorage
+   - Ragnarok map pins on an image overlay
+*/
 
+const STORAGE_KEY = "ark_home_v01";
+
+const DEFAULT_DATA = {
+  dinos: [],
+  bases: [],
+  pins: []
+};
+
+function uid() {
+  return Math.random().toString(16).slice(2) + "-" + Date.now().toString(16);
+}
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return structuredClone(DEFAULT_DATA);
+    const parsed = JSON.parse(raw);
+    return {
+      dinos: Array.isArray(parsed.dinos) ? parsed.dinos : [],
+      bases: Array.isArray(parsed.bases) ? parsed.bases : [],
+      pins: Array.isArray(parsed.pins) ? parsed.pins : []
+    };
+  } catch {
+    return structuredClone(DEFAULT_DATA);
+  }
+}
+
+function saveData() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  renderAll();
+}
+
+let state = loadData();
+
+/* ---------------- Tabs ---------------- */
+const tabButtons = Array.from(document.querySelectorAll(".tab"));
+const panels = {
+  dinos: document.getElementById("panel-dinos"),
+  bases: document.getElementById("panel-bases"),
+  map: document.getElementById("panel-map"),
+  backup: document.getElementById("panel-backup")
+};
+
+function setTab(key) {
+  tabButtons.forEach(b => b.classList.toggle("is-active", b.dataset.tab === key));
+  Object.entries(panels).forEach(([k, el]) => el.classList.toggle("is-active", k === key));
+  if (key === "map") setTimeout(() => map.invalidateSize(), 50);
+}
+
+tabButtons.forEach(btn => btn.addEventListener("click", () => setTab(btn.dataset.tab)));
+
+/* ---------------- Helpers ---------------- */
+function normalizeTags(s) {
+  return (s || "")
+    .split(",")
+    .map(t => t.trim())
+    .filter(Boolean);
+}
+
+function fmtTags(tags) {
+  const arr = Array.isArray(tags) ? tags : [];
+  return arr.length ? `#${arr.join(" #")}` : "";
+}
+
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replaceAll("&","&amp;")
+    .replaceAll("<","&lt;")
+    .replaceAll(">","&gt;")
+    .replaceAll('"',"&quot;")
+    .replaceAll("'","&#039;");
+}
+
+function readFileAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result));
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+}
+
+function numOrNull(v) {
+  const s = String(v ?? "").trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function clamp(n, min, max) {
+  if (!Number.isFinite(n)) return min;
+  return Math.max(min, Math.min(max, n));
+}
+
+/* ---------------- Dinos ---------------- */
+const dinoListEl = document.getElementById("dinoList");
+const dinoSearchEl = document.getElementById("dinoSearch");
+
+const dinoForm = document.getElementById("dinoForm");
+const dinoIdEl = document.getElementById("dinoId");
+const dinoNameEl = document.getElementById("dinoName");
+const dinoSpeciesEl = document.getElementById("dinoSpecies");
+const dinoLevelEl = document.getElementById("dinoLevel");
+const dinoTagsEl = document.getElementById("dinoTags");
+const dinoNotesEl = document.getElementById("dinoNotes");
+
+const dinoHP = document.getElementById("dinoHP");
+const dinoStam = document.getElementById("dinoStam");
+const dinoWeight = document.getElementById("dinoWeight");
+const dinoMelee = document.getElementById("dinoMelee");
+const dinoSpeed = document.getElementById("dinoSpeed");
+const dinoOxy = document.getElementById("dinoOxy");
+const dinoFood = document.getElementById("dinoFood");
+const dinoCraft = document.getElementById("dinoCraft");
+
+const dinoImageEl = document.getElementById("dinoImage");
+const dinoPreviewEl = document.getElementById("dinoPreview");
+
+const btnNewDino = document.getElementById("btnNewDino");
+const btnClearDino = document.getElementById("btnClearDino");
+const btnDeleteDino = document.getElementById("btnDeleteDino");
+
+let dinoDraftImage = null;
+
+btnNewDino.addEventListener("click", () => {
+  clearDinoForm();
+  dinoNameEl.focus();
+});
+
+btnClearDino.addEventListener("click", () => clearDinoForm());
+
+btnDeleteDino.addEventListener("click", () => {
+  const id = dinoIdEl.value;
+  if (!id) return;
+  if (!confirm("Delete this dino?")) return;
+  state.dinos = state.dinos.filter(d => d.id !== id);
+  saveData();
+  clearDinoForm();
+});
+
+dinoImageEl.addEventListener("change", async () => {
+  const f = dinoImageEl.files?.[0];
+  if (!f) { dinoDraftImage = null; renderDinoPreview(null); return; }
+  dinoDraftImage = await readFileAsDataURL(f);
+  renderDinoPreview(dinoDraftImage);
+});
+
+dinoSearchEl.addEventListener("input", () => renderDinoList());
+
+dinoForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+
+  const id = dinoIdEl.value || uid();
+  const tags = normalizeTags(dinoTagsEl.value);
+
+  const obj = {
+    id,
+    name: dinoNameEl.value.trim(),
+    species: dinoSpeciesEl.value.trim(),
+    level: numOrNull(dinoLevelEl.value),
+    tags,
+    notes: dinoNotesEl.value.trim(),
+    stats: {
+      hp: numOrNull(dinoHP.value),
+      stam: numOrNull(dinoStam.value),
+      weight: numOrNull(dinoWeight.value),
+      melee: numOrNull(dinoMelee.value),
+      speed: numOrNull(dinoSpeed.value),
+      oxy: numOrNull(dinoOxy.value),
+      food: numOrNull(dinoFood.value),
+      craft: numOrNull(dinoCraft.value)
+    },
+    image: dinoDraftImage
+  };
+
+  const idx = state.dinos.findIndex(d => d.id === id);
+  if (idx >= 0) state.dinos[idx] = obj;
+  else state.dinos.unshift(obj);
+
+  saveData();
+  loadDinoIntoForm(obj);
+});
+
+function clearDinoForm() {
+  dinoIdEl.value = "";
+  dinoNameEl.value = "";
+  dinoSpeciesEl.value = "";
+  dinoLevelEl.value = "";
+  dinoTagsEl.value = "";
+  dinoNotesEl.value = "";
+
+  dinoHP.value = "";
+  dinoStam.value = "";
+  dinoWeight.value = "";
+  dinoMelee.value = "";
+  dinoSpeed.value = "";
+  dinoOxy.value = "";
+  dinoFood.value = "";
+  dinoCraft.value = "";
+
+  dinoImageEl.value = "";
+  dinoDraftImage = null;
+  renderDinoPreview(null);
+
+  btnDeleteDino.disabled = true;
+}
+
+function loadDinoIntoForm(d) {
+  dinoIdEl.value = d.id;
+  dinoNameEl.value = d.name ?? "";
+  dinoSpeciesEl.value = d.species ?? "";
+  dinoLevelEl.value = d.level ?? "";
+  dinoTagsEl.value = (d.tags || []).join(", ");
+  dinoNotesEl.value = d.notes ?? "";
+
+  const s = d.stats || {};
+  dinoHP.value = s.hp ?? "";
+  dinoStam.value = s.stam ?? "";
+  dinoWeight.value = s.weight ?? "";
+  dinoMelee.value = s.melee ?? "";
+  dinoSpeed.value = s.speed ?? "";
+  dinoOxy.value = s.oxy ?? "";
+  dinoFood.value = s.food ?? "";
+  dinoCraft.value = s.craft ?? "";
+
+  dinoDraftImage = d.image ?? null;
+  dinoImageEl.value = "";
+  renderDinoPreview(dinoDraftImage);
+
+  btnDeleteDino.disabled = false;
+}
+
+function renderDinoPreview(dataUrl) {
+  if (!dataUrl) {
+    dinoPreviewEl.textContent = "No image";
+    return;
+  }
+  dinoPreviewEl.innerHTML = `<img alt="Dino image" src="${dataUrl}">`;
+}
+
+function renderDinoList() {
+  const q = (dinoSearchEl.value || "").trim().toLowerCase();
+
+  const filtered = state.dinos.filter(d => {
+    const hay = [
+      d.name, d.species,
+      ...(d.tags || []),
+      d.notes
+    ].join(" ").toLowerCase();
+    return !q || hay.includes(q);
+  });
+
+  dinoListEl.innerHTML = "";
+  if (!filtered.length) {
+    dinoListEl.innerHTML = `<div class="hint">No dinos yet. Click “New Dino”.</div>`;
+    return;
+  }
+
+  filtered.forEach(d => {
+    const meta = [
+      d.level ? `Lv ${d.level}` : null,
+      fmtTags(d.tags)
+    ].filter(Boolean).join(" • ");
+
+    const el = document.createElement("div");
+    el.className = "item";
+    el.innerHTML = `
+      <div class="item__top">
+        <div class="item__title">${escapeHtml(d.name || "Unnamed")} <span style="color:var(--muted);font-weight:650;">(${escapeHtml(d.species || "")})</span></div>
+      </div>
+      <div class="item__meta">${escapeHtml(meta)}</div>
+    `;
+    el.addEventListener("click", () => loadDinoIntoForm(d));
+    dinoListEl.appendChild(el);
+  });
+}
+
+/* ---------------- Bases ---------------- */
+const baseListEl = document.getElementById("baseList");
+const baseSearchEl = document.getElementById("baseSearch");
+
+const baseForm = document.getElementById("baseForm");
+const baseIdEl = document.getElementById("baseId");
+const baseNameEl = document.getElementById("baseName");
+const baseTagsEl = document.getElementById("baseTags");
+const basePinEl = document.getElementById("basePin");
+const baseDangerEl = document.getElementById("baseDanger");
+const baseNotesEl = document.getElementById("baseNotes");
+const baseImagesEl = document.getElementById("baseImages");
+const basePreviewEl = document.getElementById("basePreview");
+
+const btnNewBase = document.getElementById("btnNewBase");
+const btnClearBase = document.getElementById("btnClearBase");
+const btnDeleteBase = document.getElementById("btnDeleteBase");
+
+let baseDraftImages = [];
+
+btnNewBase.addEventListener("click", () => {
+  clearBaseForm();
+  baseNameEl.focus();
+});
+btnClearBase.addEventListener("click", () => clearBaseForm());
+btnDeleteBase.addEventListener("click", () => {
+  const id = baseIdEl.value;
+  if (!id) return;
+  if (!confirm("Delete this base?")) return;
+  state.bases = state.bases.filter(b => b.id !== id);
+  saveData();
+  clearBaseForm();
+});
+
+baseSearchEl.addEventListener("input", () => renderBaseList());
+
+baseImagesEl.addEventListener("change", async () => {
+  const files = Array.from(baseImagesEl.files || []);
+  if (!files.length) { baseDraftImages = []; renderBasePreview([]); return; }
+  baseDraftImages = [];
+  for (const f of files.slice(0, 8)) {
+    baseDraftImages.push(await readFileAsDataURL(f));
+  }
+  renderBasePreview(baseDraftImages);
+});
+
+baseForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const id = baseIdEl.value || uid();
+
+  const obj = {
+    id,
+    name: baseNameEl.value.trim(),
+    tags: normalizeTags(baseTagsEl.value),
+    pinId: basePinEl.value || null,
+    danger: clamp(Number(baseDangerEl.value || 3), 1, 5),
+    notes: baseNotesEl.value.trim(),
+    images: baseDraftImages
+  };
+
+  const idx = state.bases.findIndex(b => b.id === id);
+  if (idx >= 0) state.bases[idx] = obj;
+  else state.bases.unshift(obj);
+
+  saveData();
+  loadBaseIntoForm(obj);
+});
+
+function clearBaseForm() {
+  baseIdEl.value = "";
+  baseNameEl.value = "";
+  baseTagsEl.value = "";
+  basePinEl.value = "";
+  baseDangerEl.value = "3";
+  baseNotesEl.value = "";
+  baseImagesEl.value = "";
+  baseDraftImages = [];
+  renderBasePreview([]);
+  btnDeleteBase.disabled = true;
+}
+
+function loadBaseIntoForm(b) {
+  baseIdEl.value = b.id;
+  baseNameEl.value = b.name ?? "";
+  baseTagsEl.value = (b.tags || []).join(", ");
+  basePinEl.value = b.pinId ?? "";
+  baseDangerEl.value = String(b.danger ?? 3);
+  baseNotesEl.value = b.notes ?? "";
+  baseImagesEl.value = "";
+  baseDraftImages = Array.isArray(b.images) ? b.images : [];
+  renderBasePreview(baseDraftImages);
+  btnDeleteBase.disabled = false;
+}
+
+function renderBasePreview(imgs) {
+  if (!imgs || !imgs.length) {
+    basePreviewEl.textContent = "No images";
+    return;
+  }
+  basePreviewEl.innerHTML = imgs.map(src => `<img alt="Base image" src="${src}">`).join("");
+}
+
+function renderBaseList() {
+  const q = (baseSearchEl.value || "").trim().toLowerCase();
+  const filtered = state.bases.filter(b => {
+    const hay = [b.name, ...(b.tags || []), b.notes].join(" ").toLowerCase();
+    return !q || hay.includes(q);
+  });
+
+  baseListEl.innerHTML = "";
+  if (!filtered.length) {
+    baseListEl.innerHTML = `<div class="hint">No bases yet. Click “New Base”.</div>`;
+    return;
+  }
+
+  filtered.forEach(b => {
+    const pin = state.pins.find(p => p.id === b.pinId);
+    const meta = [
+      `Danger ${b.danger ?? 3}/5`,
+      pin ? `Pin: ${pin.name}` : null,
+      fmtTags(b.tags)
+    ].filter(Boolean).join(" • ");
+
+    const el = document.createElement("div");
+    el.className = "item";
+    el.innerHTML = `
+      <div class="item__top">
+        <div class="item__title">${escapeHtml(b.name || "Unnamed base")}</div>
+      </div>
+      <div class="item__meta">${escapeHtml(meta)}</div>
+    `;
+    el.addEventListener("click", () => loadBaseIntoForm(b));
+    baseListEl.appendChild(el);
+  });
+}
+
+/* ---------------- Map / Pins ---------------- */
+// Your map image dimensions (pixels)
+const MAP_WIDTH = 747;
+const MAP_HEIGHT = 750;
+
+const mapEl = document.getElementById("map");
+const pinListEl = document.getElementById("pinList");
+const btnNewPin = document.getElementById("btnNewPin");
+const btnClearPins = document.getElementById("btnClearPins");
+
+let pinCreateMode = false;
+let map, imageOverlay, pinLayer;
+
+function initMap() {
+  map = L.map(mapEl, {
+    crs: L.CRS.Simple,
+    minZoom: -2,
+    maxZoom: 2,
+    zoomSnap: 0.25
+  });
+
+  const bounds = [[0,0], [MAP_HEIGHT, MAP_WIDTH]];
+  imageOverlay = L.imageOverlay("assets/ragnarok.jpg", bounds).addTo(map);
+  map.fitBounds(bounds);
+
+  pinLayer = L.layerGroup().addTo(map);
+
+  map.on("click", (e) => {
+    if (!pinCreateMode) return;
+    const { lat, lng } = e.latlng;
+    const y = clamp(lat, 0, MAP_HEIGHT);
+    const x = clamp(lng, 0, MAP_WIDTH);
+
+    const name = prompt("Pin name?", "New spot");
+    if (!name) return;
+
+    const pin = { id: uid(), name: name.trim(), x, y };
+    state.pins.unshift(pin);
+    saveData();
+
+    pinCreateMode = false;
+    btnNewPin.classList.remove("btn--primary");
+    btnNewPin.textContent = "+ New Pin (click map)";
+  });
+}
+
+btnNewPin.addEventListener("click", () => {
+  pinCreateMode = !pinCreateMode;
+  if (pinCreateMode) {
+    btnNewPin.classList.add("btn--primary");
+    btnNewPin.textContent = "Click the map to place pin…";
+  } else {
+    btnNewPin.classList.remove("btn--primary");
+    btnNewPin.textContent = "+ New Pin (click map)";
+  }
+});
+
+btnClearPins.addEventListener("click", () => {
+  if (!state.pins.length) return;
+  if (!confirm("Clear ALL pins? (Bases will lose pin links)")) return;
+  state.pins = [];
+  state.bases = state.bases.map(b => ({ ...b, pinId: null }));
+  saveData();
+});
+
+function renderPins() {
+  pinLayer.clearLayers();
+  state.pins.forEach(p => {
+    const marker = L.marker([p.y, p.x]).addTo(pinLayer);
+    marker.bindPopup(`<b>${escapeHtml(p.name)}</b><br><span style="color:#a9b8d6">x:${Math.round(p.x)} y:${Math.round(p.y)}</span>`);
+  });
+
+  pinListEl.innerHTML = "";
+  if (!state.pins.length) {
+    pinListEl.innerHTML = `<div class="hint">No pins yet. Click “New Pin” then click the map.</div>`;
+    return;
+  }
+
+  state.pins.forEach(p => {
+    const el = document.createElement("div");
+    el.className = "item";
+    el.innerHTML = `
+      <div class="item__top">
+        <div class="item__title">${escapeHtml(p.name)}</div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn" type="button" data-action="rename">Rename</button>
+          <button class="btn btn--danger" type="button" data-action="delete">Delete</button>
+        </div>
+      </div>
+      <div class="item__meta">x:${Math.round(p.x)} y:${Math.round(p.y)}</div>
+    `;
+
+    el.querySelector('[data-action="rename"]').addEventListener("click", () => {
+      const n = prompt("New name:", p.name);
+      if (!n) return;
+      p.name = n.trim();
+      saveData();
+    });
+
+    el.querySelector('[data-action="delete"]').addEventListener("click", () => {
+      if (!confirm("Delete this pin?")) return;
+      state.pins = state.pins.filter(pp => pp.id !== p.id);
+      state.bases = state.bases.map(b => (b.pinId === p.id ? { ...b, pinId: null } : b));
+      saveData();
+    });
+
+    el.addEventListener("click", (evt) => {
+      if (evt.target?.closest("button")) return;
+      map.setView([p.y, p.x], 0);
+    });
+
+    pinListEl.appendChild(el);
+  });
+}
+
+function renderPinSelect() {
+  basePinEl.innerHTML = "";
+  const optNone = document.createElement("option");
+  optNone.value = "";
+  optNone.textContent = "(No pin)";
+  basePinEl.appendChild(optNone);
+
+  state.pins.forEach(p => {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    basePinEl.appendChild(opt);
+  });
+}
+
+/* ---------------- Backup ---------------- */
+const btnExport = document.getElementById("btnExport");
+const importFile = document.getElementById("importFile");
+const btnImport = document.getElementById("btnImport");
+
+btnExport.addEventListener("click", () => {
+  const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0, 19).replaceAll(":","-");
+  a.href = URL.createObjectURL(blob);
+  a.download = `ark-home-backup-${stamp}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+importFile.addEventListener("change", () => {
+  btnImport.disabled = !(importFile.files && importFile.files[0]);
+});
+
+btnImport.addEventListener("click", async () => {
+  const f = importFile.files?.[0];
+  if (!f) return;
+  if (!confirm("Import will REPLACE your current data. Continue?")) return;
+
+  try {
+    const txt = await f.text();
+    const parsed = JSON.parse(txt);
+
+    const next = {
+      dinos: Array.isArray(parsed.dinos) ? parsed.dinos : [],
+      bases: Array.isArray(parsed.bases) ? parsed.bases : [],
+      pins: Array.isArray(parsed.pins) ? parsed.pins : []
+    };
+
+    state = next;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    importFile.value = "";
+    btnImport.disabled = true;
+    renderAll();
+    alert("Import complete ✅");
+  } catch {
+    alert("Import failed: not a valid backup file.");
+  }
+});
+
+/* ---------------- Render All ---------------- */
+function renderAll() {
+  renderDinoList();
+  renderBaseList();
+  renderPinSelect();
+  renderPins();
+}
+
+function bootstrap() {
+  initMap();
+  renderAll();
+}
+
+bootstrap();
